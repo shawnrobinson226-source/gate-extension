@@ -275,10 +275,15 @@ function gateElement(element) {
   const category = categorize(text);
   const blockedByCategory = category !== "unknown" && preferences.categories[category] === "block";
   const blockedAsUnknown = category === "unknown" && preferences.hideUnknownAds;
-  const shouldHide = blockedByCategory || blockedAsUnknown;
+  // V0.1 is safe-first: category matches are logged, not hidden.
+  const shouldHide = blockedAsUnknown;
   const hideSafety = shouldHide ? getHideSafety(element) : { safe: false, reason: "" };
   const canHide = shouldHide && hideSafety.safe;
-  const gateAction = canHide ? "blocked" : category === "unknown" && !shouldHide ? "unknown" : "allowed";
+  const gateAction = blockedByCategory || canHide
+    ? "blocked"
+    : category === "unknown"
+      ? "unknown"
+      : "allowed";
 
   if (canHide) {
     hideElement(element);
@@ -293,6 +298,8 @@ function gateElement(element) {
       gate_action: gateAction,
       reason: shouldHide && !hideSafety.safe
         ? hideSafety.reason
+        : blockedByCategory
+          ? `${category} category is blocked.`
         : canHide
         ? category === "unknown"
           ? "Unknown ad hidden by preference."
