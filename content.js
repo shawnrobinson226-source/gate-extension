@@ -29,17 +29,30 @@ const AD_SELECTORS = [
   "[id^='ad-' i]",
   "[id$='-ad' i]",
   "[id*='-ad-' i]",
+  "[id='ads' i]",
+  "[id^='ads-' i]",
+  "[id$='-ads' i]",
   "[class~='ad' i]",
   "[class~='ads' i]",
   "[class~='advertisement' i]",
+  "[class~='ad-container' i]",
+  "[class~='ad-slot' i]",
+  "[class~='ad-unit' i]",
   "[id*='sponsor' i]",
   "[class*='sponsor' i]",
-  "[aria-label*='ad' i]",
+  "[id*='promoted' i]",
+  "[class*='promoted' i]",
+  "[id*='promo' i]",
+  "[class~='promo' i]",
+  "[class~='promotion' i]",
+  "[role='banner'][aria-label*='ad' i]",
   "[aria-label*='sponsor' i]",
-  "iframe[src*='ad' i]",
+  "[aria-label*='advertisement' i]",
+  "iframe[src*='/ad' i]",
+  "iframe[src*='ads.' i]",
+  "iframe[src*='adserver' i]",
   "iframe[src*='doubleclick' i]",
-  "iframe[src*='googlesyndication' i]",
-  "aside"
+  "iframe[src*='googlesyndication' i]"
 ];
 
 const SPONSORED_TEXT = [
@@ -52,6 +65,9 @@ const SPONSORED_TEXT = [
 
 const HIDDEN_ATTRIBUTE = "data-gate-hidden";
 const SCANNED_ATTRIBUTE = "data-gate-scanned";
+const MAX_CANDIDATE_TEXT_LENGTH = 1200;
+const MAX_CANDIDATE_AREA_RATIO = 0.35;
+const NEARBY_TEXT_SELECTOR = "[aria-label], [title], span, small, strong, a, p";
 let preferences = null;
 let scanTimer = null;
 
@@ -67,9 +83,12 @@ function normalize(text) {
   return String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-function readText(element) {
+function textFromNode(node) {
+  return normalize(node?.textContent || "");
+}
+
+function readSignalText(element) {
   const parts = [
-    element.innerText,
     element.getAttribute("aria-label"),
     element.getAttribute("title"),
     element.getAttribute("alt"),
@@ -84,18 +103,68 @@ function readText(element) {
   return normalize(parts.filter(Boolean).join(" "));
 }
 
-function hasSponsoredLabel(element, text) {
-  if (/\bads?\b/.test(text) || SPONSORED_TEXT.some((label) => text === label || text.includes(label))) {
+function readCategoryText(element) {
+  const nearbyText = Array.from(element.querySelectorAll(NEARBY_TEXT_SELECTOR))
+    .slice(0, 12)
+    .map((node) => [
+      node.getAttribute("aria-label"),
+      node.getAttribute("title"),
+      node.textContent
+    ].filter(Boolean).join(" "))
+    .join(" ");
+
+  const siblingText = [element.previousElementSibling, element.nextElementSibling]
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((node) => textFromNode(node).slice(0, 180))
+    .join(" ");
+
+  return normalize([
+    readSignalText(element),
+    textFromNode(element).slice(0, MAX_CANDIDATE_TEXT_LENGTH),
+    nearbyText,
+    siblingText
+  ].filter(Boolean).join(" "));
+}
+
+function isSponsoredLabelText(text) {
+  return text === "ad" ||
+    text === "ads" ||
+    SPONSORED_TEXT.some((label) => text === label || text.includes(label));
+}
+
+function hasSponsoredLabel(element) {
+  const signalText = readSignalText(element);
+  if (isSponsoredLabelText(signalText)) {
     return true;
   }
 
-  return Array.from(element.querySelectorAll("span, small, div, a"))
-    .slice(0, 20)
-    .some((node) => SPONSORED_TEXT.includes(normalize(node.textContent)));
+  return Array.from(element.querySelectorAll("span, small, a"))
+    .slice(0, 8)
+    .some((node) => isSponsoredLabelText(normalize(node.textContent)));
+}
+
+function isManageableCandidate(element) {
+  if (!(element instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (element === document.body || element === document.documentElement) {
+    return false;
+  }
+
+  const rect = element.getBoundingClientRect();
+  const viewportArea = Math.max(window.innerWidth * window.innerHeight, 1);
+  const candidateArea = Math.max(rect.width * rect.height, 0);
+
+  if (candidateArea > viewportArea * MAX_CANDIDATE_AREA_RATIO) {
+    return false;
+  }
+
+  return textFromNode(element).length <= MAX_CANDIDATE_TEXT_LENGTH;
 }
 
 function looksLikeAd(element) {
-  const text = readText(element);
   const matchesSelector = AD_SELECTORS.some((selector) => {
     try {
       return element.matches(selector);
@@ -104,7 +173,7 @@ function looksLikeAd(element) {
     }
   });
 
-  return matchesSelector || hasSponsoredLabel(element, text);
+  return isManageableCandidate(element) && (matchesSelector || hasSponsoredLabel(element));
 }
 
 function categorize(text) {
@@ -133,7 +202,7 @@ function gateElement(element) {
 
   element.setAttribute(SCANNED_ATTRIBUTE, "true");
 
-  const text = readText(element);
+  const text = readCategoryText(element);
   const category = categorize(text);
   const blockedByCategory = category !== "unknown" && preferences.categories[category] === "block";
   const blockedAsUnknown = category === "unknown" && preferences.hideUnknownAds;
@@ -148,7 +217,7 @@ function gateElement(element) {
     type: "gate:recordIntercept",
     entry: {
       source: location.hostname || "page",
-      input_type: hasSponsoredLabel(element, text) ? "sponsored_label" : "selector_match",
+      input_type: hasSponsoredLabel(element) ? "sponsored_label" : "selector_match",
       category,
       gate_action: gateAction,
       reason: shouldHide
@@ -173,9 +242,12 @@ function scan() {
     document.querySelectorAll(selector).forEach((element) => candidates.add(element));
   });
 
-  document.querySelectorAll("div, section, aside, article, iframe").forEach((element) => {
-    if (hasSponsoredLabel(element, readText(element))) {
-      candidates.add(element);
+  document.querySelectorAll("span, small, a").forEach((label) => {
+    if (isSponsoredLabelText(normalize(label.textContent))) {
+      const container = label.closest("iframe, [role='complementary'], aside, article, section, div, li");
+      if (container) {
+        candidates.add(container);
+      }
     }
   });
 
