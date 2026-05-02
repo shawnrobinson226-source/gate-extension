@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GATE</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="popup-shell">
+      <header class="header">
+        <div>
+          <p class="eyebrow">GATE V0.1</p>
+          <h1>Local Ad Preference Gate</h1>
+        </div>
+      </header>
+
+      <section class="stats-grid" aria-label="Intercept stats">
+        <div class="stat">
+          <span id="blocked-count">0</span>
+          <p>Blocked</p>
+        </div>
+        <div class="stat">
+          <span id="allowed-count">0</span>
+          <p>Allowed</p>
+        </div>
+        <div class="stat">
+          <span id="unknown-count">0</span>
+          <p>Unknown</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Categories</h2>
+        </div>
+        <div id="category-controls" class="category-list"></div>
+      </section>
+
+      <section class="panel">
+        <label class="toggle-row">
+          <span>
+            <strong>Hide unknown ads</strong>
+            <small>Applies when no category keyword matches.</small>
+          </span>
+          <input id="hide-unknown" type="checkbox">
+        </label>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Recent log</h2>
+          <button id="clear-log" type="button">Clear</button>
+        </div>
+        <ol id="recent-log" class="log-list"></ol>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

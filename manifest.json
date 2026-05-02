@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "GATE",
+  "version": "0.1.0",
+  "description": "Local ad preference gate for blocking or allowing basic ad categories.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "GATE",
+    "default_popup": "popup.html"
+  }
+}
