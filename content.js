@@ -66,8 +66,13 @@ const SPONSORED_TEXT = [
 const HIDDEN_ATTRIBUTE = "data-gate-hidden";
 const SCANNED_ATTRIBUTE = "data-gate-scanned";
 const MAX_CANDIDATE_TEXT_LENGTH = 1200;
-const MAX_CANDIDATE_AREA_RATIO = 0.35;
+const MAX_HIDE_WIDTH_RATIO = 0.6;
+const MAX_HIDE_HEIGHT_RATIO = 0.4;
 const NEARBY_TEXT_SELECTOR = "[aria-label], [title], span, small, strong, a, p";
+const PROTECTED_TAGS = new Set(["BODY", "HTML", "MAIN", "NAV", "HEADER", "FOOTER", "ARTICLE"]);
+const ROOT_CONTAINER_PATTERN = /(^|\s|-|_)(app|root|page|layout|shell|site|application)(\s|-|_|$)/i;
+const NORMAL_CONTENT_PATTERN = /(^|\s|-|_)(article|story|post|headline|byline|content|main|nav|navigation|menu|page|layout)(\s|-|_|$)/i;
+const AD_EVIDENCE_PATTERN = /(^|\s|-|_)(ad|ads|advertisement|sponsor|sponsored|promoted|promo|promotion)(\s|-|_|$)/i;
 let preferences = null;
 let scanTimer = null;
 
@@ -101,6 +106,20 @@ function readSignalText(element) {
   }
 
   return normalize(parts.filter(Boolean).join(" "));
+}
+
+function readIdentityText(element) {
+  const dataAttributes = Array.from(element.attributes || [])
+    .filter((attribute) => attribute.name.startsWith("data-"))
+    .map((attribute) => `${attribute.name} ${attribute.value}`)
+    .join(" ");
+
+  return [
+    element.id,
+    element.className,
+    element.getAttribute("role"),
+    dataAttributes
+  ].filter(Boolean).join(" ");
 }
 
 function readCategoryText(element) {
@@ -144,20 +163,35 @@ function hasSponsoredLabel(element) {
     .some((node) => isSponsoredLabelText(normalize(node.textContent)));
 }
 
+function hasAdAttributeSignal(element) {
+  return AD_EVIDENCE_PATTERN.test(readIdentityText(element));
+}
+
+function matchesAdSelector(element) {
+  return AD_SELECTORS.some((selector) => {
+    try {
+      return element.matches(selector);
+    } catch (_error) {
+      return false;
+    }
+  });
+}
+
+function isProtectedContentContainer(element) {
+  if (PROTECTED_TAGS.has(element.tagName) || isRootLikeContainer(element)) {
+    return true;
+  }
+
+  const identity = readIdentityText(element);
+  return NORMAL_CONTENT_PATTERN.test(identity) && !AD_EVIDENCE_PATTERN.test(identity);
+}
+
 function isManageableCandidate(element) {
   if (!(element instanceof HTMLElement)) {
     return false;
   }
 
-  if (element === document.body || element === document.documentElement) {
-    return false;
-  }
-
-  const rect = element.getBoundingClientRect();
-  const viewportArea = Math.max(window.innerWidth * window.innerHeight, 1);
-  const candidateArea = Math.max(rect.width * rect.height, 0);
-
-  if (candidateArea > viewportArea * MAX_CANDIDATE_AREA_RATIO) {
+  if (isProtectedContentContainer(element)) {
     return false;
   }
 
@@ -165,15 +199,8 @@ function isManageableCandidate(element) {
 }
 
 function looksLikeAd(element) {
-  const matchesSelector = AD_SELECTORS.some((selector) => {
-    try {
-      return element.matches(selector);
-    } catch (_error) {
-      return false;
-    }
-  });
-
-  return isManageableCandidate(element) && (matchesSelector || hasSponsoredLabel(element));
+  return isManageableCandidate(element) &&
+    (matchesAdSelector(element) || hasAdAttributeSignal(element) || hasSponsoredLabel(element));
 }
 
 function categorize(text) {
@@ -189,6 +216,48 @@ function categorize(text) {
 function hideElement(element) {
   element.setAttribute(HIDDEN_ATTRIBUTE, "true");
   element.style.setProperty("display", "none", "important");
+}
+
+function isRootLikeContainer(element) {
+  return ROOT_CONTAINER_PATTERN.test(readIdentityText(element));
+}
+
+function getHideSafety(element) {
+  if (!(element instanceof HTMLElement)) {
+    return { safe: false, reason: "not_html_element" };
+  }
+
+  if (isProtectedContentContainer(element)) {
+    return { safe: false, reason: "protected_container" };
+  }
+
+  const rect = element.getBoundingClientRect();
+  const tooWide = rect.width > window.innerWidth * MAX_HIDE_WIDTH_RATIO;
+  const tooTall = rect.height > window.innerHeight * MAX_HIDE_HEIGHT_RATIO;
+
+  if (tooWide && tooTall) {
+    return { safe: false, reason: "too_large_to_block" };
+  }
+
+  return { safe: true, reason: "" };
+}
+
+function findSponsoredContainer(label) {
+  let current = label.parentElement;
+
+  while (current && current !== document.body && current !== document.documentElement) {
+    if (isProtectedContentContainer(current)) {
+      return null;
+    }
+
+    if (isManageableCandidate(current)) {
+      return current;
+    }
+
+    current = current.parentElement;
+  }
+
+  return null;
 }
 
 function gateElement(element) {
@@ -207,9 +276,11 @@ function gateElement(element) {
   const blockedByCategory = category !== "unknown" && preferences.categories[category] === "block";
   const blockedAsUnknown = category === "unknown" && preferences.hideUnknownAds;
   const shouldHide = blockedByCategory || blockedAsUnknown;
-  const gateAction = shouldHide ? "blocked" : category === "unknown" ? "unknown" : "allowed";
+  const hideSafety = shouldHide ? getHideSafety(element) : { safe: false, reason: "" };
+  const canHide = shouldHide && hideSafety.safe;
+  const gateAction = canHide ? "blocked" : category === "unknown" && !shouldHide ? "unknown" : "allowed";
 
-  if (shouldHide) {
+  if (canHide) {
     hideElement(element);
   }
 
@@ -220,7 +291,9 @@ function gateElement(element) {
       input_type: hasSponsoredLabel(element) ? "sponsored_label" : "selector_match",
       category,
       gate_action: gateAction,
-      reason: shouldHide
+      reason: shouldHide && !hideSafety.safe
+        ? hideSafety.reason
+        : canHide
         ? category === "unknown"
           ? "Unknown ad hidden by preference."
           : `${category} category is blocked.`
@@ -244,7 +317,7 @@ function scan() {
 
   document.querySelectorAll("span, small, a").forEach((label) => {
     if (isSponsoredLabelText(normalize(label.textContent))) {
-      const container = label.closest("iframe, [role='complementary'], aside, article, section, div, li");
+      const container = findSponsoredContainer(label);
       if (container) {
         candidates.add(container);
       }
